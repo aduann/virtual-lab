@@ -1,0 +1,66 @@
+#!/bin/bash
+
+#Installing iptables-persistent
+echo -e "\e[34mInstalling iptables-persistent ...\e[39m"
+sleep 1
+sudo apt-get install iptables-persistent
+
+#Uncomment net.ipv4.ip_forward in /etc/sysctl.conf
+echo -e "\e[34mUncomment #net.ipv4.ip_forward=1\e[39m"
+sleep 1
+sudo sed -i -e 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
+
+### Network interfaces ### 
+loop=n
+while [ $loop = n ]; do
+
+ifconfig |grep Link
+echo -e "\e[92mPlease select Internal network interfcae\e[39m"; read int
+echo -e "\e[92mPlease select External network interface\e[39m"; read ext
+
+echo -e "\e[92mPlease confirm network interface for NAT service,\e[96m"
+echo "Internal: $int"
+echo "External: $ext"
+echo -e "\e[92mCorrect? (Y/N)\e[39m"; read ans
+     ans=${ans,,} #convert to lover case
+  if [[ $ans =~ ^(yes|y)$ ]]; then 
+     loop=y
+  elif [[ $ans =~ ^(no|n)$ ]]; then
+     loop=n
+  else
+     loop=n
+     echo -e  "\e[31mPlease enter a valid input\e[39m"
+  fi
+done
+
+### Iptables forwarding ###
+echo -e "\e[34mSetting Iptables forwarding ..."
+sleep 1 
+sudo iptables -I INPUT -i $ext -p udp --dport 67:68 --sport 67:68 -j DROP
+sudo iptables -t nat -A POSTROUTING -o $ext -j MASQUERADE
+sudo iptables -A FORWARD -i $ext -o $int -m state --state RELATED,ESTABLISHED -j ACCEPT
+sudo iptables -A FORWARD -i $int -o $ext -j ACCEPT
+sudo service iptables-persistent save
+sudo netfilter-persistent save
+
+### Network Configuration file ###
+echo -e "\e[34mSetting network configuration file ...\e[39m"
+sudo ifdown $int
+sudo ifdown $ext
+echo -e "\e[92mPlease enter interface IP address for $int(internal)\e[39m"; read ipadd
+echo -e "\e[92mPlease enter broadcast IP address for $int(internal)\e[39m"; read broad
+sudo sh -c "echo \"         \" >> /etc/network/interfaces"
+sudo sh -c "echo \"auto $int\" >> /etc/network/interfaces"
+sudo sh -c "echo \"iface $int inet static\" >> /etc/network/interfaces"
+sudo sh -c "echo \"address $ipadd\" >> /etc/network/interfaces"
+sudo sh -c "echo \"broadcast $broad\" >> /etc/network/interfaces"
+
+sudo sh -c "echo \"         \" >> /etc/network/interfaces"
+sudo sh -c "echo \"auto $ext\" >> /etc/network/interfaces"
+sudo sh -c "echo \"iface $ext inet dhcp\" >> /etc/network/interfaces"
+
+echo -e "\e[34mRestarting network interfaces ...\e[39m"
+sudo ip addr flush $int
+sudo ip addr flush $ext
+sleep 1
+sudo systemctl restart networking.service
