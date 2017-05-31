@@ -1,0 +1,79 @@
+#!/bin/bash
+
+### Installing DNSMASQ ###
+echo -e "\e[34mInstalling DNSMASQ ...\e[39m"
+sleep 1
+sudo apt-get install dnsmasq
+
+### Network interfaces ###
+# >>> User define config <<<
+loop=n
+while [ $loop = n ]; do
+echo -e "\e[39m=============================================================="
+ifconfig |grep Link
+echo    "=============================================================="
+echo -e "\e[92mPlease select network interface for DHCP\e[39m"; read dhcp
+echo -e "\e[92mPlease enter DHCP host ip address\e[39m"; read hostip
+echo -e "\e[92mPlease enter default gateway for DHCP\e[39m"; read gtw
+  cast=$(echo "$hostip" | cut -f1-3 -d'.').255  #172.17.0.1 -> 172.17.0.255
+echo -e "\e[92mPlease provide DHCP IP range, lower bound\e[39m"; read low
+echo -e "\e[92mPlease provide DHCP IP range, higher bound\e[39m"; read high
+echo -e "\e[92mPlease provide DHCP 'Domain Name' [optional] \e[39m"; read domain
+echo -e "\e[92mPlease confirm your DHCP setup,\e[39m"
+echo "DHCP interface:  $dhcp"
+echo "Host ip address: $hostip"
+echo "Default gateway: $gtw"
+echo "IP range(low):  $low"
+echo "IP range(high): $high"
+echo "Domain name: $domain"
+echo -e "\e[92mCorrect? (Y/N)\e[33m"; read ans
+     ans=${ans,,}
+  if [[ $ans =~ ^(yes|y)$ ]]; then
+     loop=y
+  elif [[ $ans =~ ^(no|n)$ ]]; then
+     loop=n
+  else 
+     loop=n
+     echo -e "\e[31mPlease enter a valid input\e39m"
+  fi
+done
+
+# >>> DHCP host IP: /etc/network/interfaces <<<
+echo -e "\e[34mSetting network interfaces ...\e[39m"
+sleep 1
+#sudo ifdown $dhcp
+sudo sh -c "echo \"          \" >> /etc/network/interfaces"
+sudo sh -c "echo \"auto $dhcp\" >> /etc/network/interfaces"
+sudo sh -c "echo \"iface $dhcp inet static\" >> /etc/network/interfaces"
+sudo sh -c "echo \"  address $hostip\" >> /etc/network/interfaces"
+sudo sh -c "echo \"  netmask 255.255.255.0\" >> /etc/network/interfaces"
+sudo sh -c "echo \"  broadcast $cast\" >> /etc/network/interfaces"
+sudo sh -c "echo \"  gateway $gtw   \" >> /etc/network/interfaces"
+sudo sh -c "echo \"  nameservers 8.8.8.8 8.8.4.4\" >> /etc/network/interfaces"
+
+# >>> DNSMASQ config: /etc/dnsmasq.conf<<<
+echo -e "\e[34mConfiguring dnsmasq.conf ...\e[39m"
+sleep 1
+#Never forward plain names (without a dot or domain part)
+sudo sed -i -e 's/#domain-needed/domain-needed/g' /etc/dnsmasq.conf
+#Never forward addresses in the non-routed address spaces
+sudo sed -i -e 's/#bogus-priv/bogus-priv/g' /etc/dnsmasq.conf
+#Force dnsmasq to try each query with each server strictly in order
+sudo sed -i -e 's/#strict-order/strict-order/' /etc/dnsmasq.conf
+#Listen for DHCP and DNS requests only on specified interfaces
+sudo sed -i -e '106s/eth1/'$dhcp'/' /etc/dnsmasq.conf
+#Domain automatically added to simple names in a hoses-file
+sudo sed -i -e 's/#expand-hosts/expand-hosts/' /etc/dnsmasq.conf
+#Set the domain name for dnsmasq (optional)
+#sudp sed -i -e 's/#domain=/'$domain'/' /etc/dnsmasq.conf
+#Enable the integrated DHCP server, DHCP range
+sudo sed -i -e '152,158s/'#dhcp-range=192.168.0.50,192.168.0.150,12h'/dhcp-range='$low','$high',24h/' /etc/dnsmasq.conf
+#override the default route supplied by dnsmasq
+sudo sed -i -e '336,341s/#dhcp-option=3/dhcp-option=3,'$gtw'/' /etc/dnsmasq.conf
+
+echo -e "\e[34mRestarting network service ...\e[39m"
+sleep 1
+sudo systemctl restart networking.service
+echo -e "\e[34mRestarting dnsmasq service ...\e[39m"
+sleep 1
+sudo /etc/init.d/dnsmasq restart
