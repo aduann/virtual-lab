@@ -1,0 +1,171 @@
+#!/bin/bash
+#title        :pxe_setup
+#description  :This script will enable a pxe server for BIOS clients
+#              && allow user to load in new iso images          
+#author       :Andy Duann
+#date         :06/15/2017
+#revision     :rev 1.0A
+#notes        :DHCP IP=172.17.0.99 && PROXY IP=172.17.0.99                       
+#bash_ver     :4.3.48(1) 
+#====================================================================
+
+# Check user status. (New PXE=1;Add image=2) 
+echo -e "\e[96mPlease select the following,"
+echo -e " Enter '1' for new PXE server"
+echo -e " Enter '2' for adding iso image\e[39m"; read ans
+
+#################################
+## Download ISO image from URL ##
+#################################
+
+# Check for valid URL to download ISO image
+valid=no
+while [ $valid = no ]; do
+      if [ "$ans" -eq 1 -o "$ans" -eq 2 ]; then
+#         if [ "$ans" -eq 2 ]; then 
+#         sudo service dnsmasq stop
+#         echo -e "\e[95mDNSMASQ will be stop temporarily."
+#         fi
+         echo -e "\e[96mPlease enter URL for iso image download."
+         echo -e "ex) http://releases.ubuntu.com/16.04/ubuntu-16.04.2-desktop-amd64.iso\e[39m"; read iso
+         sudo wget $iso
+         if [[ "$?" -eq 0 ]]; then   #check returns status of wget (true=0; false=1) 
+            valid=yes
+         else
+            echo -e "\e[31m**URL provided is NOT valid**\e[39m"
+            valid=no
+         fi
+      else
+         echo -e "\e[31mPlease enter 1 or 2 only.\e[39m"
+         exit
+      fi
+done
+
+# Define parameters. (img=version.iso / dir=version)
+img=$(echo "$iso" | grep -o '[^/]*$')     #grep the last field separated by "/"
+# echo $img
+dir=$(echo "$img" | sed 's/.iso//')       #cut ".iso" extension for directory name
+# echo $dir
+
+# Create TFTP directory (New user only)
+if [ $ans -eq 1 ]; then
+   sudo mkdir /tftpboot
+   sudo chown root:root /tftpboot
+fi
+# Create ISO temp file
+if [ ! -d /tmp/iso ]; then
+   sudo mkdir /tmp/iso
+fi
+
+# Copy bootfile 
+sudo mount -oloop,ro $img /tmp/iso
+sudo mkdir /tftpboot/$dir
+sudo cp /tmp/iso/casper/{vmlinuz.efi,initrd.lz} /tftpboot/$dir/
+echo -e "\e[92mBootfile has been added to ftp server.\e[39m"
+sleep 1
+
+# Save ISO files locally
+sudo mkdir /$dir
+sudo cp -R /tmp/iso/* /tmp/iso/.disk /$dir/
+sudo umount /tmp/iso
+echo -e "\e[92mISO image has been saved locally.\e[39m"
+sleep 1
+
+######################
+## Setup NFS server ##
+######################
+
+# Install nfs-kernel (New user only)
+if [ $ans -eq 1 ]; then
+   echo -e "\e[92mInstalling nfs-kernel server ...\e[39m"
+   sleep 2
+   sudo apt-get install nfs-kernel-server
+   sleep 1
+fi
+
+# Add ISO file directory to nfs
+sudo sh -c "echo \"/$dir  *(ro,sync,no_wdelay,insecure_locks,no_root_squash,insecure,no_subtree_check)\" >> /etc/exports"
+echo -e "\e[92mISO directory has been saved to nfs.\e[39m"
+sudo service nfs-kernel-server restart
+sleep 1
+
+######################
+##  PXElinux Setup  ##
+######################
+
+# Install pxelinux for BIOS boot clients (New user only)
+if [ $ans -eq 1 ]; then
+   echo -e "\e[92mInstalling PXElinux ...\e[39m"
+   sleep 2
+   sudo wget https://www.kernel.org/pub/linux/utils/boot/syslinux/syslinux-6.03.tar.xz
+   sleep 1
+   sudo tar -xJf syslinux-6.03.tar.xz
+   sudo cp syslinux-6.03/bios/core/pxelinux.0 /tftpboot/
+   sudo cp syslinux-6.03/bios/com32/lib/libcom32.c32 /tftpboot/
+   sudo cp syslinux-6.03/bios/com32/libutil/libutil.c32 /tftpboot/
+   sudo cp syslinux-6.03/bios/com32/elflink/ldlinux/ldlinux.c32 /tftpboot/
+   sudo cp syslinux-6.03/bios/com32/menu/vesamenu.c32 /tftpboot/
+   sudo mkdir /tftpboot/pxelinux.cfg
+   sudo tee /tftpboot/pxelinux.cfg/default >> /dev/null << EOF
+DEFAULT vesamenu.c32
+MENU TITLE Welcome to PXE boot Menu
+EOF
+fi
+
+# Edit fefault vesamenu
+sudo tee -a /tftpboot/pxelinux.cfg/default > /dev/null << EOF
+LABEL $dir
+  MENU LABEL $dir
+  KERNEL $dir/vmlinuz.efi
+  APPEND initrd=$dir/initrd.lz root=/dev/nfs boot=casper netboot=nfs nfsroot=172.17.0.99:/$dir splash --
+EOF
+echo -e "\e[92mImage name has been added to PXE menu.\e[39m"
+sleep 1
+
+######################
+##  DNSMASQ Setup   ##
+######################
+
+# Install dnsmasq (New user only)
+if [ $ans -eq 1 ]; then
+   echo -e "\e[92mInstalling dnsmasq ...\e[39m"
+   sleep 2
+   sudo apt-get install dnsmasq
+   sleep 1
+   sudo tee /etc/dnsmasq.conf > /dev/null << EOF
+# Don't function as a DNS server
+#port=0
+# Log lots of extra information about DHCP transactions
+log-dhcp
+# Enable the built-in TFTP server
+enable-tftp
+# Set the root directory for files available via TFTP
+tftp-root=/tftpboot
+# Disable re-use of the DHCP servername and filename fields as extra
+# option space. That's to avoid confusing some old or broken DHCP clients
+dhcp-no-override
+# Set the boot file and server IP based on the architecture
+pxe-service=x86PC, "Welcome to PXE boot ...", pxelinux, 172.17.0.99
+# PXE menu
+pxe-prompt="Testing PXE in sec", 3
+# We are proxing for the DHCP server 172.17.0.100
+dhcp-range=172.17.0.100,proxy
+EOF
+
+sudo service dnsmasq stop
+sleep 1
+sudo service dnsmasq start
+sleep 1
+
+fi
+
+echo -e "\e[92m ==> $dir has been added"
+echo -e " ==> Please configure network interface to 172.17.0.99\e[39m"
+
+
+  
+
+
+
+
+
